@@ -33,6 +33,8 @@
          handle_cast/2,
          handle_info/2,
          terminate/2,
+		 buffer_transaction/2,
+		 synch_with_peers_transaction/0,
          code_change/3]).
 
 -export([blocking_sync/1]).
@@ -47,6 +49,33 @@
                 gossip_peers :: [],
                 actor :: binary(),
                 blocking_syncs :: dict:dict()}).
+
+%% @private
+%% For each peers, we add to the buffer the list of updates. 
+buffer_transaction(List, Actor) ->
+	% Get all peers without me
+    {ok, AllPeers} = ?SYNC_BACKEND:membership(),
+    PeersWithoutMe = lasp_synchronization_backend:without_me(AllPeers),
+	
+	%Get the Pid of our buffer
+	Pid = ?SYNC_BACKEND:get_pid_synchronisation_transaction(),
+	
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% When the API is called, buffer the updates %
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	lists:foreach(fun(Peer) -> lasp_synchronisation_transaction:add_buffer(Pid, Peer, {List, Actor}) end, PeersWithoutMe),
+	ok.
+
+%% Send all messages in the buffer to the peers.
+synch_with_peers_transaction() ->
+	Pid = ?SYNC_BACKEND:get_pid_synchronisation_transaction(),
+	{ok, {Buffer, _}} = lasp_synchronisation_transaction:get_buffer(Pid),
+	lists:foreach(fun(Key) -> 
+						  {List, Actor} = maps:get(Key, Buffer),
+						  {KeySender, TransactionId} = Key,
+						  ?SYNC_BACKEND:send(?MODULE, {transactionMsg, List, Actor, node(), TransactionId}, KeySender) 
+				  end, maps:keys(Buffer)),
+	ok.
 
 %%%===================================================================
 %%% lasp_synchronization_backend callbacks
@@ -111,6 +140,7 @@ handle_call({blocking_sync, ObjectFilterFun}, From,
             #state{gossip_peers=GossipPeers,
                    store=Store,
                    blocking_syncs=BlockingSyncs0}=State) ->
+
     %% Get the peers to synchronize with.
     Members = case ?SYNC_BACKEND:broadcast_tree_mode() of
         true ->
@@ -143,6 +173,7 @@ handle_call({blocking_sync, ObjectFilterFun}, From,
     end;
 
 handle_call(Msg, _From, State) ->
+
     _ = lager:warning("Unhandled messages: ~p", [Msg]),
     {reply, ok, State}.
 
@@ -151,6 +182,7 @@ handle_call(Msg, _From, State) ->
 handle_cast({state_ack, From, Id, {Id, _Type, _Metadata, Value}},
             #state{store=Store,
                    blocking_syncs=BlockingSyncs0}=State) ->
+
     % lager:info("Received ack from ~p for ~p with value ~p", [From, Id, Value]),
 
     BlockingSyncs = dict:fold(fun(K, V, Acc) ->
@@ -176,13 +208,13 @@ handle_cast({state_ack, From, Id, {Id, _Type, _Metadata, Value}},
 handle_cast({state_send, From, {Id, Type, _Metadata, Value}, AckRequired},
             #state{store=Store, actor=Actor}=State) ->
     lasp_marathon_simulations:log_message_queue_size("state_send"),
-
+	
     {ok, Object} = ?CORE:receive_value(Store, {state_send,
                                        From,
                                        {Id, Type, _Metadata, Value},
                                        ?CLOCK_INCR(Actor),
                                        ?CLOCK_INIT(Actor)}),
-
+	
     case AckRequired of
         true ->
             ?SYNC_BACKEND:send(?MODULE, {state_ack, node(), Id, Object}, From);
@@ -207,7 +239,41 @@ handle_cast({state_send, From, {Id, Type, _Metadata, Value}, AckRequired},
     {noreply, State};
 
 handle_cast(Msg, State) ->
-    _ = lager:warning("Unhandled messages: ~p", [Msg]),
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% On receive, acknowledge them and apply them locally %
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	case Msg of 
+		{transactionMsg, List, Actor, Sender, TransactionId} ->
+			%erlang:display("Transaction message receive."),
+		
+			%Apply the changes localy
+			%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+			% Ensure atomicity and FIFO %
+			%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+			% This foreach should ensure atomicity and FIFO because we only apply changes when     % 
+			% we get the full list of updates. Having the full list ensures the FIFO.              %
+			% the atomicity is ensured by the foreach because we will exit this foreach only when  %
+			% changes are finished.           													   %
+			%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+			lists:foreach(fun(Elem) -> {A,B} = Elem, lasp:update(A,B,Actor) end, List),
+			
+		
+			%Send an ack
+			?SYNC_BACKEND:send(?MODULE, {ack_transaction, node(), TransactionId}, Sender);
+			%erlang:display("Send ACK_");
+	
+
+		%When we get an ack, we remove the corresponding node in the buffer
+		{ack_transaction, Sender, TransactionId} ->
+			%erlang:display("Get an ack. Remove node from the buffer:"),
+			%erlang:display(Sender),
+			%erlang:display(TransactionId),
+			lasp_synchronisation_transaction:remove_buffer(?SYNC_BACKEND:get_pid_synchronisation_transaction(), {Sender, TransactionId});
+		
+		%If message is unknow
+		_ ->
+			_ = lager:warning("Unhandled messages: ~p", [Msg])
+	end,
     {noreply, State}.
 
 %% @private
@@ -270,8 +336,11 @@ handle_info(plumtree_peer_refresh, State) ->
 
     {noreply, State#state{gossip_peers=GossipPeers}};
 
+
 handle_info(Msg, State) ->
-    _ = lager:warning("Unhandled messages: ~p", [Msg]),
+	case Msg of {transaction_sync, _} -> synch_with_peers_transaction(), schedule_state_synchronization();
+		_ -> lager:warning("Unhandled messages: ~p", [Msg])
+	end,
     {noreply, State}.
 
 %% @private
@@ -284,6 +353,7 @@ terminate(_Reason, _State) ->
     {ok, #state{}}.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+	
 
 %%%===================================================================
 %%% Internal functions
@@ -291,7 +361,19 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% @private
 schedule_state_synchronization() ->
-    ShouldSync = true
+	
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% Periodically, synchronize with peers %
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	timer:send_after(4000, {transaction_sync, fun(_) -> true end}),
+
+	
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% Disable the normal synchronization mechanism %
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+	% We simply force ShouldSync = false		   %
+	%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    ShouldSync = false
             andalso (not ?SYNC_BACKEND:tutorial_mode())
             andalso (
               ?SYNC_BACKEND:peer_to_peer_mode()

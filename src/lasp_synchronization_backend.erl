@@ -38,6 +38,15 @@
          compute_exchange/1,
          without_me/1]).
 
+-export([get_pid_synchronisation_transaction/0]).
+
+% This return the Pid of the process containing the transaction buffer.
+get_pid_synchronisation_transaction() ->
+	case whereis(pid_synchronisation_transaction) of 
+		undefined -> register(pid_synchronisation_transaction, lasp_synchronisation_transaction:new()), get_pid_synchronisation_transaction();
+		Pid -> Pid
+	end.
+
 %% @private
 membership() ->
     lasp_peer_service:members().
@@ -133,13 +142,14 @@ reactive_server() ->
 
 %% @private
 send(Mod, Msg, Peer) ->
-    log_transmission(Mod:extract_log_type_and_payload(Msg), 1),
+	% log_transmission() throw errors
+    %log_transmission(Mod:extract_log_type_and_payload(Msg), 1),
     PeerServiceManager = lasp_config:peer_service_manager(),
     case PeerServiceManager:forward_message(Peer, Mod, Msg) of
         ok ->
             ok;
         _Error ->
-            % lager:error("Failed send to ~p for reason ~p", [Peer, Error]),
+             lager:error("Failed send to ~p for reason ~p", [Peer, _Error]),
             ok
     end.
 

@@ -76,29 +76,30 @@ end_per_testcase(Case, Config) ->
 
 all() ->
     [
-     contracted_latency_test,
-     uncontracted_latency_test,
-     latency_with_reads_test,
-     sql_parser_test,
-     sql_combined_view_test,
-     sql_simple_contracted_latency_test,
-     sql_simple_uncontracted_latency_test,
-     sql_join_contracted_latency_test,
-     sql_join_uncontracted_latency_test,
-     stream_test,
-     query_test,
-     ivar_test,
-     orset_test,
-     awset_ps_test,
-     dynamic_ivar_test,
-     monotonic_read_test,
-     map_test,
-     filter_test,
-     union_test,
-     product_test,
-     intersection_test,
-     membership_test,
-     enforce_once_test
+     transaction_orset_test
+     %contracted_latency_test,
+     %uncontracted_latency_test,
+     %latency_with_reads_test,
+     %sql_parser_test,
+     %sql_combined_view_test,
+     %sql_simple_contracted_latency_test,
+     %sql_simple_uncontracted_latency_test,
+     %sql_join_contracted_latency_test,
+     %sql_join_uncontracted_latency_test,
+     %stream_test,
+     %query_test,
+     %ivar_test,
+     %orset_test,
+     %awset_ps_test,
+     %dynamic_ivar_test,
+     %monotonic_read_test,
+     %map_test,
+     %filter_test,
+     %union_test,
+     %product_test,
+     %intersection_test,
+     %membership_test,
+     %enforce_once_test
     ].
 
 -include("lasp.hrl").
@@ -113,6 +114,34 @@ all() ->
 -define(TRIM, {trim, 100, 100}).
 
 -define(ID, <<"myidentifier">>).
+
+%% @doc Test of the orset with transactions.
+%% Test by Olivier MARTIN and Brandon NAITALI.
+transaction_orset_test(_Config) ->
+
+	lasp:declare({<<"set">>, state_orset}, state_orset),
+	lasp:declare({<<"set2">>, state_orset}, state_orset),
+	
+	lasp:transaction([{{<<"set">>, state_orset}, {add, 1}}, {{<<"set2">>, state_orset}, {add, 2}}], self()),
+	lasp:transaction([{{<<"set">>, state_orset}, {add, 3}}, {{<<"set2">>, state_orset}, {add, 4}}], self()),
+	lasp:transaction([{{<<"set">>, state_orset}, {add, 5}}, {{<<"set">>, state_orset}, {add, 6}}], self()),
+
+    timer:sleep(6000),
+
+	{ok, ValueR1} = lasp:query({<<"set">>, state_orset}),
+	{ok, ValueR2} = lasp:query({<<"set2">>, state_orset}),
+	
+	L1 = sets:to_list(ValueR1),
+	L2 = sets:to_list(ValueR2),
+
+	?assertEqual(true, lists:member(1, L1)),
+	?assertEqual(true, lists:member(3, L1)),
+	?assertEqual(true, lists:member(5, L1)),
+	?assertEqual(true, lists:member(6, L1)),
+	?assertEqual(true, lists:member(2, L2)),
+	?assertEqual(true, lists:member(4, L2)),
+
+    ok.
 
 contracted_latency_test(_Config) ->
     case lasp_config:get(dag_enabled, true) of

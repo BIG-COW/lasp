@@ -34,6 +34,7 @@
          declare/2,
          declare_dynamic/2,
          update/3,
+		 transaction/2,
          bind/2,
          bind_to/2,
          read/2,
@@ -49,6 +50,27 @@
 
 -export([invariant/3,
          enforce_once/3]).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Create a new API call named lasp:transaction() %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Transaction by Olivier MARTIN & Brandon NAITALI
+%%
+%% @doc Create a transaction. A transaction is a group of updates to be applied at the same time.
+%%		List should be a list following the form: List = [ {id(), operation()}, ..., {id(), operation()} ]
+%%
+transaction(List, Actor) ->
+	
+	% We apply the changes localy
+	lists:foreach(fun(Elem) -> {A,B} = Elem, lasp:update(A,B,Actor) end, List),
+	
+	% We buffer the transaction
+	lasp_state_based_synchronization_backend:buffer_transaction(List, Actor),
+	
+	% We force an immediate synchronization.
+	% Notice that the function 'synch_with_peers_transaction()' is called every 10 sec by the backend.
+	lasp_state_based_synchronization_backend:synch_with_peers_transaction(),
+	ok.
 
 %% Public Helpers
 
@@ -127,6 +149,7 @@ declare(Id, Type) ->
 -spec update(id(), operation(), actor()) -> {ok, var()} | {error, timeout}.
 update(Id, Operation, Actor) ->
     do(update, [Id, Operation, Actor]).
+
 
 %% @doc Bind a dataflow variable to a value.
 %%
