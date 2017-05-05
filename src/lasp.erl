@@ -34,6 +34,7 @@
          declare/2,
          declare_dynamic/2,
          update/3,
+		 updateLocal/3,
 		 transaction/2,
          bind/2,
          bind_to/2,
@@ -62,7 +63,7 @@
 transaction(List, Actor) ->
 	
 	% We apply the changes localy
-	lists:foreach(fun(Elem) -> {A,B} = Elem, lasp:update(A,B,Actor) end, List),
+	lists:foreach(fun(Elem) -> {A,B} = Elem, lasp:updateLocal(A,B,Actor) end, List),
 	
 	% We buffer the transaction
 	lasp_state_based_synchronization_backend:buffer_transaction(List, Actor),
@@ -148,6 +149,9 @@ declare(Id, Type) ->
 %%
 -spec update(id(), operation(), actor()) -> {ok, var()} | {error, timeout}.
 update(Id, Operation, Actor) ->
+    transaction([{Id, Operation}], Actor).
+
+updateLocal(Id, Operation, Actor) ->
     do(update, [Id, Operation, Actor]).
 
 

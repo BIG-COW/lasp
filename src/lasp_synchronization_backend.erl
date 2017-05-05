@@ -149,7 +149,7 @@ send(Mod, Msg, Peer) ->
         ok ->
             ok;
         _Error ->
-             lager:error("Failed send to ~p for reason ~p", [Peer, _Error]),
+             % lager:error("Failed send to ~p for reason ~p", [Peer, _Error]),
             ok
     end.
 

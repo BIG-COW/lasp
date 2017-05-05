@@ -255,7 +255,7 @@ handle_cast(Msg, State) ->
 			% the atomicity is ensured by the foreach because we will exit this foreach only when  %
 			% changes are finished.           													   %
 			%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-			lists:foreach(fun(Elem) -> {A,B} = Elem, lasp:update(A,B,Actor) end, List),
+			lists:foreach(fun(Elem) -> {A,B} = Elem, lasp:updateLocal(A,B,Actor) end, List),
 			
 		
 			%Send an ack
